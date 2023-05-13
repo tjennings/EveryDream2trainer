@@ -1,5 +1,8 @@
+import concurrent
 import os
 import logging
+from concurrent.futures import ProcessPoolExecutor
+
 import yaml
 import json
 
@@ -211,46 +214,62 @@ class Dataset:
                     logging.warning(f" *** Error parsing json image entry in {json_path}: {data}")
                     continue
                 image_configs[img] = cfg
-        return Dataset(image_configs)    
-    
+        return Dataset(image_configs)
+
+    @classmethod
+    def process_image(cls, image, config, aspects, DEFAULT_MAX_CAPTION_LENGTH):
+
+        if len(config.main_prompts) > 1:
+            logging.warning(
+                f" *** Found multiple multiple main_prompts for image {image}, but only one will be applied: {config.main_prompts}")
+
+        if len(config.main_prompts) < 1:
+            logging.warning(f" *** No main_prompts for image {image}")
+
+        tags = []
+        tag_weights = []
+        for tag in sorted(config.tags, key=lambda x: x.weight or 1.0, reverse=True):
+            tags.append(tag.value)
+            tag_weights.append(tag.weight)
+        use_weights = len(set(tag_weights)) > 1
+
+        try:
+            caption = ImageCaption(
+                main_prompt=next(iter(config.main_prompts)),
+                rating=config.rating or 1.0,
+                tags=tags,
+                tag_weights=tag_weights,
+                max_target_length=config.max_caption_length or DEFAULT_MAX_CAPTION_LENGTH,
+                use_weights=use_weights)
+
+            item = ImageTrainItem(
+                image=None,
+                caption=caption,
+                aspects=aspects,
+                pathname=os.path.abspath(image),
+                flip_p=config.flip_p or 0.0,
+                multiplier=config.multiply or 1.0,
+                cond_dropout=config.cond_dropout
+            )
+            return item
+        except Exception as e:
+            logging.error(f" *** Error preloading image or caption for: {image}, error: {e}")
+            raise e
+
     def image_train_items(self, aspects):
         items = []
-        for image in tqdm(self.image_configs, desc="preloading", dynamic_ncols=True):
-            config = self.image_configs[image]
+        with ProcessPoolExecutor(max_workers=(os.cpu_count())) as executor:
+            futures = []
+            for image in self.image_configs:
+                future = executor.submit(self.process_image, image, self.image_configs[image], aspects,
+                                         DEFAULT_MAX_CAPTION_LENGTH)
+                futures.append(future)
 
-            if len(config.main_prompts) > 1:
-                logging.warning(f" *** Found multiple multiple main_prompts for image {image}, but only one will be applied: {config.main_prompts}")
+            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="preloading",
+                               dynamic_ncols=True):
+                try:
+                    items.append(future.result())
+                except Exception as e:
+                    logging.error(f" *** Error in processing image, error: {e}")
 
-            if len(config.main_prompts) < 1:
-                logging.warning(f" *** No main_prompts for image {image}")
-
-            tags = []
-            tag_weights = []
-            for tag in sorted(config.tags, key=lambda x: x.weight or 1.0, reverse=True):
-                tags.append(tag.value)
-                tag_weights.append(tag.weight)
-            use_weights = len(set(tag_weights)) > 1 
-
-            try:            
-                caption = ImageCaption(
-                    main_prompt=next(iter(config.main_prompts)),
-                    rating=config.rating or 1.0,
-                    tags=tags,
-                    tag_weights=tag_weights,
-                    max_target_length=config.max_caption_length or DEFAULT_MAX_CAPTION_LENGTH,
-                    use_weights=use_weights)
-
-                item = ImageTrainItem(
-                    image=None,
-                    caption=caption,
-                    aspects=aspects,
-                    pathname=os.path.abspath(image),
-                    flip_p=config.flip_p or 0.0,
-                    multiplier=config.multiply or 1.0,
-                    cond_dropout=config.cond_dropout
-                )
-                items.append(item)
-            except Exception as e:
-                logging.error(f" *** Error preloading image or caption for: {image}, error: {e}")
-                raise e
         return items
