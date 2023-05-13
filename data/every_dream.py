@@ -15,6 +15,7 @@ limitations under the License.
 """
 import logging
 import os
+import pickle
 
 import torch
 from torch.utils.data import Dataset
@@ -44,6 +45,7 @@ class EveryDreamBatch(Dataset):
                  shuffle_tags=False,
                  rated_dataset=False,
                  rated_dataset_dropout_target=0.5,
+                 latent_cache_dir=None,
                  name='train'
                  ):
         self.data_loader = data_loader
@@ -62,6 +64,7 @@ class EveryDreamBatch(Dataset):
         # First epoch always trains on all images
         self.image_train_items  = []
         self.__update_image_train_items(1.0)
+        self.latent_cache_dir = latent_cache_dir
         self.name = name
 
         num_images = len(self.image_train_items)
@@ -83,7 +86,10 @@ class EveryDreamBatch(Dataset):
     def __getitem__(self, i):
         example = {}
 
-        train_item = self.__get_image_for_trainer(self.image_train_items[i], self.debug_level)
+        if self.latent_cache_dir is not None:
+            train_item = self.__cached_get_image_for_trainer(self.image_train_items[i], self.debug_level)
+        else:
+            train_item = self.__get_image_for_trainer(self.image_train_items[i], self.debug_level)
 
         if self.retain_contrast:
             std_dev = 1.0
@@ -124,6 +130,28 @@ class EveryDreamBatch(Dataset):
         example["runt_size"] = train_item["runt_size"]
 
         return example
+
+
+    def __cached_get_image_for_trainer(self,image_train_item: ImageTrainItem, debug_level=0):
+        # /mnt/van_gogh/model_training/deltron/val_images/photo/pexels/pexels-brett-sayles-3569516.jpg
+        file_name = os.path.basename(image_train_item.pathname)
+        file_name = os.path.splitext(file_name)[0] # filename_only
+        file_name = file_name + str(image_train_item.target_wh[0]) + ".pickle"
+        file_name = os.path.join(self.latent_cache_dir, file_name)
+
+        if os.path.exists(file_name):
+            # If the serialized file exists, load and return it
+            with open(file_name, "rb") as file:
+                item = pickle.load(file)
+        else:
+            # If the serialized file doesn't exist, call self.__get_image_for_trainer
+            item = self.__get_image_for_trainer(image_train_item, debug_level)
+
+            # Serialize and save the item
+            with open(file_name, "wb") as file:
+                pickle.dump(item, file)
+
+        return item
 
     def __get_image_for_trainer(self, image_train_item: ImageTrainItem, debug_level=0):
         example = {}

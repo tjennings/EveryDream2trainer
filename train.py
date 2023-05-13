@@ -536,7 +536,8 @@ def main(args):
         seed = seed,
         shuffle_tags=args.shuffle_tags,
         rated_dataset=args.rated_dataset,
-        rated_dataset_dropout_target=(1.0 - (args.rated_dataset_target_dropout_percent / 100.0))
+        rated_dataset_dropout_target=(1.0 - (args.rated_dataset_target_dropout_percent / 100.0)),
+        latent_cache_dir=args.latent_cache_dir
     )
 
     torch.cuda.benchmark = False
